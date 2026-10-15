@@ -1,0 +1,697 @@
+# Java 25 Upgrade – Iteration 15 Executive Report (spring-petclinic)  
+  
+## 📋 Executive summary  
+- 🚀 OpenRewrite (`com.amazonaws.java.migrate.UpgradeToJava25`) moved spring-petclinic from Java 17 to Java 25. It changed `pom.xml`, `build.gradle` and five test sources. The Kiro CLI build-fix pass then found no compilation errors and made no code changes.  
+- ✅ The post-upgrade verification build finished with SUCCESS. No automated tests were discovered or run; verification was compilation only.  
+- 🌱 The Spring stack was not changed. code-upgrade.log records "Skipping Spring Boot upgrade: detected Spring Boot 4.1 is already >= target 4.0", and there is no "Verified: effective Spring Framework version..." or "WARNING: ...still < 5.3" line in it. Runtime validation reports "OK (static): no Java-17-incompatible Spring detected (effective Spring n/a)."  
+- ⚠️ The smoke-start tier was skipped: "Smoke-start tier skipped (opt-in: export ENABLE_RUNTIME_VALIDATION=true to enable an advisory app-boot check)." The application was never started, so its runtime behaviour on Java 25 is unverified.  
+- 🧩 Production code under `src/main` is unchanged. Only build configuration and test sources were modified.  
+  
+## 🛠️ Application changes  
+- 📦 The iteration branch changes 8 files: 56 insertions, 14 deletions.  
+  - `build.gradle`  
+  - `pom.xml`  
+  - `src/test/java/org/springframework/samples/petclinic/MysqlTestApplication.java`  
+  - `src/test/java/org/springframework/samples/petclinic/PetClinicConcurrencyTests.java`  
+  - `src/test/java/org/springframework/samples/petclinic/PetClinicIntegrationTests.java`  
+  - `src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java`  
+  - `src/test/java/org/springframework/samples/petclinic/service/ClinicServiceTests.java`  
+  - `summary.md` (repository-root upgrade notes written by the Kiro CLI pass)  
+- ➕ Dependencies added (from report.json). Both are Maven build plugins, not runtime dependencies:  
+  - `org.apache.maven.plugins:maven-dependency-plugin` (version LATEST). In the diff it is a `<build><plugins>` entry with no `<scope>` and no explicit `<version>`, so the version comes from the `spring-boot-starter-parent` 4.1.0 parent. It adds an execution of the `properties` goal.  
+  - `org.apache.maven.plugins:maven-surefire-plugin` (version LATEST). In the diff it is a `<build><plugins>` entry with no `<scope>` and no explicit `<version>`, so the version comes from the parent. It adds an `<argLine>` configuration.  
+  - 🔒 Neither plugin is packaged with the application at compile or runtime scope, so they add no API that would conflict with the target runtime's classloader.  
+- ➖ Dependencies removed: none.  
+- ⬆️ Dependencies upgraded: none.  
+  
+## 🧰 Tools used  
+- ☕ Java SDK: Amazon Corretto OpenJDK 25.0.4.1 (build 25.0.4.1+10-LTS).  
+- 🔧 OpenRewrite: `rewrite-maven-plugin` 6.42.0, running the `com.amazonaws.java.migrate.UpgradeToJava25` recipe. The sub-recipes that made changes include:  
+  - `UpgradeBuildToJava21` / `UpgradeBuildToJava25` / `UpdateMavenProjectPropertyJavaVersion` / `UpdateJavaCompatibility`  
+  - `UpgradePluginsForJava25` → `AddMockitoJavaAgentToMavenSurefirePlugin`  
+  - `SequencedCollection` → `ListFirstAndLast`  
+  - `MigrateMainMethodToInstanceMain`, `ReplaceSystemOutWithIOPrint`, `ReplaceUnusedVariablesWithUnderscore`  
+- 🤖 Amazon Kiro CLI 2.14.2 with model `claude-opus-5.5`, which ran the automated build-fix and report pass. It succeeded on the first attempt.  
+  
+## 💻 Code changes  
+- 🏗️ `pom.xml`:  
+  - `<java.version>17</java.version>` → `<java.version>25</java.version>`.  
+  - Added an empty `<argLine></argLine>` property.  
+  - Added `maven-dependency-plugin` with the `properties` goal.  
+  - Added `maven-surefire-plugin` with `<argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar}</argLine>`.  
+- 🐘 `build.gradle`: `JavaLanguageVersion.of(17)` → `JavaLanguageVersion.of(25)` in the toolchain block.  
+- 🚪 `MysqlTestApplication.java` and `PetClinicIntegrationTests.java`: `public static void main(String[] args)` → `void main()`.  
+- 🚪 `PostgresIntegrationTests.java`: `public static void main(String[] args)` → `void main(String[] args)`.  
+- 🖨️ `PetClinicConcurrencyTests.java`:  
+  - `catch (Exception e)` → `catch (Exception _)`.  
+  - Five `System.out.println(...)` calls → `IO.println(...)`.  
+- 📚 `ClinicServiceTests.java`: three `.get(0)` calls → `.getFirst()`, on `owner.getPets()` twice and `vet.getSpecialties()` once. The `.get(1)` call is unchanged.  
+- 📝 `summary.md`: new 22-line upgrade-notes file.  
+- 🎯 The production entry point `PetClinicApplication.main` (`public static void main(String[] args)`, which calls `SpringApplication.run`) is not in the diff and stays unchanged.  
+  
+## ⚠️ Risks  
+- 🟠 Runtime is unverified. The smoke-start tier was skipped, so nobody has confirmed that the application boots or serves requests on Java 25.  
+- 🟠 Only compilation was verified. No automated tests were discovered or run, so the test-source rewrites and the Mockito agent configuration have not been checked at test runtime.  
+- 🟡 The Spring version was not confirmed. Runtime validation reports "effective Spring n/a", and code-upgrade.log has no "Verified: effective Spring Framework version" line, so the effective Spring Framework version was not established. The Spring Boot upgrade step was skipped because Boot 4.1 is already at or above the 4.0 target.  
+- 🟡 The `void main()` instance-main methods (JEP 512) in three test launcher classes no longer have the classic `public static` signature. IDE run configurations and any tooling that expects a static `main` may not find them.  
+- 🟡 The surefire `argLine` depends on `${org.mockito:mockito-core:jar}`, which the new `maven-dependency-plugin:properties` execution resolves. If that execution is skipped, or a surefire run happens outside the normal lifecycle, the `-javaagent` path may not resolve.  
+- 🟡 The Gradle build has no equivalent of the Maven Mockito `-javaagent` configuration, so the two build tools behave differently.  
+- 🟡 code-upgrade.log attributes `UpgradeTransitiveDependencyVersion` (byte-buddy / byte-buddy-agent 1.17.x) to `build.gradle`, but the branch diff for `build.gradle` contains only the toolchain change. No byte-buddy constraint is on the branch.  
+- 🟡 OpenRewrite reported "The recipe produced 2 warning(s)". The logs do not say what the warnings were, so they have not been reviewed.  
+- 🟢 Both added plugins are build-time only, so they carry no risk of packaged-API or classloader conflicts.  
+  
+## ⏱️ Time savings  
+- ⏳ Transformation duration: 9 minute(s).  
+- 💰 Estimated time saved: 30 minute(s).  
+  
+## 🔜 Next steps  
+- ▶️ Run the automated test suite on Java 25 with both Maven and Gradle, including the database integration tests (MySQL/Testcontainers, PostgreSQL/Docker Compose) in an environment with Docker.  
+- 🚦 Re-run runtime validation with `ENABLE_RUNTIME_VALIDATION=true` so the smoke-start tier boots the application.  
+- 🌱 Establish and record the effective Spring Framework / Spring Boot versions so the Spring outcome is backed by a verified value instead of "n/a".  
+- 🐘 Decide whether `build.gradle` needs the byte-buddy 1.17.x constraint the log mentions, and add a Mockito `-javaagent` `jvmArgs` setting to the Gradle `test` task to match Maven.  
+- 🧪 Confirm that IDE run configurations still launch the instance `void main()` methods in `PetClinicIntegrationTests`, `MysqlTestApplication` and `PostgresIntegrationTests`.  
+- 🔍 Find out which two OpenRewrite recipe warnings were raised (for example from `target/rewrite/datatables`) and review them.  
+- 📌 Consider pinning explicit versions for the two added plugins if you want the build to be reproducible independently of the Spring Boot parent.
+
+## Verification results
+
+Copied from this iteration's report.json, progress.json and runtime-validation.log after the final build. This section is not written by the AI.
+
+- 🛠️ Post-upgrade verification build: SUCCESS
+- 🧪 Automated tests: none discovered or run (compilation only)
+- ⏱️ Transformation duration: 9 minute(s)
+- ⏳ Estimated time saved: 30 minute(s)
+- 🚦 Runtime validation (runtime-validation.log):
+  - OK (static): no Java-17-incompatible Spring detected (effective Spring n/a).
+  - Smoke-start tier skipped (opt-in: export ENABLE_RUNTIME_VALIDATION=true to enable an advisory app-boot check).
+
+## Kiro credit usage
+
+💳 Kiro CLI credits used: 6.52  
+Includes 0.50 for job setup (startup smoke test and knowledge-base indexing).  
+
+## Codebase index refresh
+
+- Outcome: Index current
+- Reason: Index current at d1bce5444713e0e09be66233d6cc4d00a723699d.
+- Previously indexed commit: d1bce5444713e0e09be66233d6cc4d00a723699d
+- Source commit at transformation start: d1bce5444713e0e09be66233d6cc4d00a723699d
+- Duration: 0.0s
+
+## Requirements register refresh
+
+- Outcome: Refreshed
+- Duration: 30.6s
+
+## Feature Parity Verification
+
+- Requirements evaluated: 85
+- Satisfied: 85
+- Regressions: 0
+- Unverified: 0
+- Behaviour-judged (changed requirements): 0
+
+### Verdict coverage
+
+Of 85 requirement(s): 51 test-backed, 0 behaviour-judged, 34 unchanged-by-construction, 0 unverified.
+
+No regressions were detected; every requirement is satisfied.
+
+### Satisfied (85) — reasoning
+
+- **FR-add-pagination-model-e069e384**: WHEN a caller invokes addPaginationModel, the OwnerController SHALL render the owners/ownersList view.
+  - Acceptance criteria:
+    - AC1: WHEN addPaginationModel completes normally, the OwnerController SHALL return "owners/ownersList".
+    - AC2: WHEN addPaginationModel is invoked, the OwnerController SHALL accept page of type int, model of type Model and paginated of type Page&lt;Owner>.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-add-visit-c911887c**: WHEN a caller invokes addVisit, the Owner SHALL persist the visit.
+  - Acceptance criteria:
+    - AC1: WHEN addVisit runs, the Owner SHALL call getPet.
+    - AC2: WHEN addVisit is invoked, the Owner SHALL accept petId of type Integer and visit of type Visit.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-find-owner-a49383e6**: WHEN a caller invokes findOwner, the OwnerController SHALL return the owner for the given owner id.
+  - Acceptance criteria:
+    - AC1: WHEN findOwner runs, the OwnerController SHALL call findById.
+    - AC2: WHEN findOwner completes normally, the OwnerController SHALL return a value of type Owner.
+    - AC3: WHEN findOwner is invoked, the OwnerController SHALL accept ownerId of type Integer.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-retrieval-for-in-8e2233c2**: WHEN an HTTP GET request is received on /owners/new, the OwnerController SHALL render the VIEWS_OWNER_CREATE_OR_UPDATE_FORM view.
+  - Acceptance criteria:
+    - AC1: WHEN initCreationForm completes normally, the OwnerController SHALL return VIEWS_OWNER_CREATE_OR_UPDATE_FORM.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-process-creation-form-8d9ea80f**: WHEN an HTTP POST request is received on /owners/new, the OwnerController SHALL persist the owner and redirect to /owners/{id}.
+  - Acceptance criteria:
+    - AC1: IF result.hasErrors(), THEN the OwnerController SHALL return VIEWS_OWNER_CREATE_OR_UPDATE_FORM.
+    - AC2: WHEN processCreationForm runs, the OwnerController SHALL call getId.
+    - AC3: WHEN processCreationForm completes normally, the OwnerController SHALL return "redirect:/owners/" + owner.getId().
+    - AC4: WHEN processCreationForm is invoked, the OwnerController SHALL accept owner of type Owner, result of type BindingResult and redirectAttributes of type RedirectAttributes.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-add-interceptors-2db6d262**: WHEN a caller invokes addInterceptors, the WebConfiguration SHALL persist the interceptors.
+  - Acceptance criteria:
+    - AC1: WHEN addInterceptors runs, the WebConfiguration SHALL call localeChangeInterceptor.
+    - AC2: WHEN addInterceptors is invoked, the WebConfiguration SHALL accept registry of type InterceptorRegistry.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-add-pet-358c26cd**: WHEN a caller invokes addPet, the Owner SHALL persist the pet.
+  - Acceptance criteria:
+    - AC1: IF pet == null, THEN the Owner SHALL stop without further processing.
+    - AC2: IF getPets().contains(pet), THEN the Owner SHALL stop without further processing.
+    - AC3: IF !existingPet.isNew() && !pet.isNew() && Objects.equals(existingPet.getId(), pet.getId()), THEN the Owner SHALL stop without further processing.
+    - AC4: WHEN addPet runs, the Owner SHALL call getPets, isNew and getId.
+    - AC5: WHEN addPet is invoked, the Owner SHALL accept pet of type Pet.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-add-specialty-1674003f**: WHEN a caller invokes addSpecialty, the Vet SHALL persist the specialty.
+  - Acceptance criteria:
+    - AC1: WHEN addSpecialty runs, the Vet SHALL call getSpecialtiesInternal.
+    - AC2: WHEN addSpecialty is invoked, the Vet SHALL accept specialty of type Specialty.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-cache-configuration-b62e389a**: WHEN a caller invokes cacheConfiguration, the CacheConfiguration SHALL cache the configuration.
+  - Acceptance criteria:
+    - AC1: WHEN cacheConfiguration completes normally, the CacheConfiguration SHALL return new MutableConfiguration<>().setStatisticsEnabled(true).
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-find-all-8bffef11**: WHILE a @Transactional(readOnly = true) transaction is active, WHEN a caller invokes findAll, the VetRepository SHALL return all vets.
+  - Acceptance criteria:
+    - AC1: WHEN findAll completes normally, the VetRepository SHALL return a value of type Page&lt;Vet>.
+    - AC2: WHEN findAll runs, the VetRepository SHALL apply the @Cacheable("vets") policy.
+    - AC3: WHEN findAll is invoked, the VetRepository SHALL accept pageable of type Pageable.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-find-id-fadf90a3**: WHEN a caller invokes findById, the OwnerRepository SHALL return the owner for the given id.
+  - Acceptance criteria:
+    - AC1: WHEN findById completes normally, the OwnerRepository SHALL return a value of type Optional&lt;Owner>.
+    - AC2: WHEN findById is invoked, the OwnerRepository SHALL accept id of type Integer.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-find-last-name-starting-aa2d6e02**: WHEN a caller invokes findByLastNameStartingWith, the OwnerRepository SHALL return the owners for the given last name starting with.
+  - Acceptance criteria:
+    - AC1: WHEN findByLastNameStartingWith completes normally, the OwnerRepository SHALL return a value of type Page&lt;Owner>.
+    - AC2: WHEN findByLastNameStartingWith is invoked, the OwnerRepository SHALL accept lastName of type String and pageable of type Pageable.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-find-paginated-owners-la-5f291a0b**: WHEN a caller invokes findPaginatedForOwnersLastName, the OwnerController SHALL return the paginated for the owners last name.
+  - Acceptance criteria:
+    - AC1: WHEN findPaginatedForOwnersLastName runs, the OwnerController SHALL call findByLastNameStartingWith.
+    - AC2: WHEN findPaginatedForOwnersLastName completes normally, the OwnerController SHALL return owners.findByLastNameStartingWith(lastname, pageable).
+    - AC3: WHEN findPaginatedForOwnersLastName is invoked, the OwnerController SHALL accept page of type int and lastname of type String.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-find-paginated-3e5bfab3**: WHEN a caller invokes findPaginated, the VetController SHALL return the paginateds for the given page.
+  - Acceptance criteria:
+    - AC1: WHEN findPaginated runs, the VetController SHALL call findAll.
+    - AC2: WHEN findPaginated completes normally, the VetController SHALL return vetRepository.findAll(pageable).
+    - AC3: WHEN findPaginated is invoked, the VetController SHALL accept page of type int.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-find-pet-types-4a4019bc**: WHEN a caller invokes findPetTypes, the PetTypeRepository SHALL return the pet types.
+  - Acceptance criteria:
+    - AC1: WHEN findPetTypes completes normally, the PetTypeRepository SHALL return a value of type List&lt;PetType>.
+    - AC2: WHEN findPetTypes runs, the PetTypeRepository SHALL apply the @Query("SELECT ptype FROM PetType ptype ORDER BY ptype.name") policy.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-find-pet-736a4db7**: WHEN a caller invokes findPet, the PetController SHALL return the pet for the given owner id and pet id.
+  - Acceptance criteria:
+    - AC1: IF petId == null, THEN the PetController SHALL return new Pet().
+    - AC2: WHEN findPet runs, the PetController SHALL call findById and getPet.
+    - AC3: WHEN findPet completes normally, the PetController SHALL return owner.getPet(petId).
+    - AC4: WHEN findPet is invoked, the PetController SHALL accept ownerId and petId as input.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-get-address-e610f011**: WHEN a caller invokes getAddress, the Owner SHALL return the address.
+  - Acceptance criteria:
+    - AC1: WHEN getAddress completes normally, the Owner SHALL return this.address.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-get-birth-date-5d1a2cf6**: WHEN a caller invokes getBirthDate, the Pet SHALL return the birth date.
+  - Acceptance criteria:
+    - AC1: WHEN getBirthDate completes normally, the Pet SHALL return this.birthDate.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-get-city-5b62bdf0**: WHEN a caller invokes getCity, the Owner SHALL return the city.
+  - Acceptance criteria:
+    - AC1: WHEN getCity completes normally, the Owner SHALL return this.city.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-get-date-c5fa2858**: WHEN a caller invokes getDate, the Visit SHALL return the date.
+  - Acceptance criteria:
+    - AC1: WHEN getDate completes normally, the Visit SHALL return this.date.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-get-description-7fcdfbbc**: WHEN a caller invokes getDescription, the Visit SHALL return the description.
+  - Acceptance criteria:
+    - AC1: WHEN getDescription completes normally, the Visit SHALL return this.description.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-get-first-name-2cf892d7**: WHEN a caller invokes getFirstName, the Person SHALL return the first name.
+  - Acceptance criteria:
+    - AC1: WHEN getFirstName completes normally, the Person SHALL return this.firstName.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-get-id-dff3c8df**: WHEN a caller invokes getId, the BaseEntity SHALL return the id.
+  - Acceptance criteria:
+    - AC1: WHEN getId completes normally, the BaseEntity SHALL return id.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-get-last-name-4aa0214d**: WHEN a caller invokes getLastName, the Person SHALL return the last name.
+  - Acceptance criteria:
+    - AC1: WHEN getLastName completes normally, the Person SHALL return this.lastName.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-get-name-3c186000**: WHEN a caller invokes getName, the NamedEntity SHALL return the name.
+  - Acceptance criteria:
+    - AC1: WHEN getName completes normally, the NamedEntity SHALL return this.name.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-get-nr-specialties-eef72285**: WHEN a caller invokes getNrOfSpecialties, the Vet SHALL return the number of specialties.
+  - Acceptance criteria:
+    - AC1: WHEN getNrOfSpecialties runs, the Vet SHALL call getSpecialtiesInternal.
+    - AC2: WHEN getNrOfSpecialties completes normally, the Vet SHALL return getSpecialtiesInternal().size().
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-get-pet-89451014**: WHEN a caller invokes getPet, the Owner SHALL return the pet matching the given name, optionally ignoring new unsaved pets.
+  - Acceptance criteria:
+    - AC1: IF compName != null && compName.equalsIgnoreCase(name), THEN the Owner SHALL return pet.
+    - AC2: IF !ignoreNew || !pet.isNew(), THEN the Owner SHALL return pet.
+    - AC3: WHEN getPet runs, the Owner SHALL call getPets, getName and isNew.
+    - AC4: WHEN getPet completes normally, the Owner SHALL return a value of type Pet.
+    - AC5: WHEN getPet is invoked, the Owner SHALL accept name of type String and ignoreNew of type boolean.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-get-pets-85ad86b2**: WHEN a caller invokes getPets, the Owner SHALL return the pets.
+  - Acceptance criteria:
+    - AC1: WHEN getPets completes normally, the Owner SHALL return this.pets.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-get-specialties-internal-052ee390**: WHEN a caller invokes getSpecialtiesInternal, the Vet SHALL return the internal collection of specialties.
+  - Acceptance criteria:
+    - AC1: WHEN getSpecialtiesInternal completes normally, the Vet SHALL return this.specialties.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-get-specialties-b335f114**: WHEN a caller invokes getSpecialties, the Vet SHALL return the specialties.
+  - Acceptance criteria:
+    - AC1: WHEN getSpecialties runs, the Vet SHALL call getSpecialtiesInternal.
+    - AC2: WHEN getSpecialties completes normally, the Vet SHALL return a value of type List&lt;Specialty>.
+    - AC3: WHEN getSpecialties runs, the Vet SHALL apply the @XmlElement policy.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-get-telephone-e1f86527**: WHEN a caller invokes getTelephone, the Owner SHALL return the telephone.
+  - Acceptance criteria:
+    - AC1: WHEN getTelephone completes normally, the Owner SHALL return this.telephone.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-get-type-53f3b461**: WHEN a caller invokes getType, the Pet SHALL return the type.
+  - Acceptance criteria:
+    - AC1: WHEN getType completes normally, the Pet SHALL return this.type.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-get-vet-list-d52edbb9**: WHEN a caller invokes getVetList, the Vets SHALL return the vet list.
+  - Acceptance criteria:
+    - AC1: WHEN getVetList completes normally, the Vets SHALL return vets.
+    - AC2: WHEN getVetList runs, the Vets SHALL apply the @XmlElement policy.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-get-visits-dc70dca5**: WHEN a caller invokes getVisits, the Pet SHALL return the visits.
+  - Acceptance criteria:
+    - AC1: WHEN getVisits completes normally, the Pet SHALL return this.visits.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-handles-configuration-fo-53f12fe5**: WHEN a caller invokes petclinicCacheConfigurationCustomizer, the CacheConfiguration SHALL customize the cache configuration.
+  - Acceptance criteria:
+    - AC1: WHEN petclinicCacheConfigurationCustomizer runs, the CacheConfiguration SHALL call cacheConfiguration.
+    - AC2: WHEN petclinicCacheConfigurationCustomizer completes normally, the CacheConfiguration SHALL return cm -> cm.createCache("vets", cacheConfiguration()).
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-handles-data-processing-56a1e477**: WHEN a caller creates a PetTypeFormatter, the PetTypeFormatter SHALL initialize the PetTypeFormatter with the given types.
+  - Acceptance criteria:
+    - AC1: WHEN PetTypeFormatter is constructed, the PetTypeFormatter SHALL accept types of type PetTypeRepository.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetTypeFormatterTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-persistence-for-7dd8e70f**: WHEN a caller creates an OwnerController, the OwnerController SHALL initialize itself with the given owners repository.
+  - Acceptance criteria:
+    - AC1: WHEN OwnerController is constructed, the OwnerController SHALL accept owners of type OwnerRepository.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-persistence-for-d3349421**: WHEN a caller invokes an operation of OwnerRepository, the OwnerRepository SHALL provide the operations findByLastNameStartingWith and findById.
+  - Acceptance criteria:
+    - AC1: The OwnerRepository SHALL expose the operations findByLastNameStartingWith and findById.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-handles-persistence-for-e05d2ff5**: WHEN a caller creates a PetController, the PetController SHALL initialize itself with the given owners and pet types repositories.
+  - Acceptance criteria:
+    - AC1: WHEN PetController is constructed, the PetController SHALL accept owners of type OwnerRepository and types of type PetTypeRepository.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-persistence-for-566dc1a4**: WHEN a caller invokes an operation of PetTypeRepository, the PetTypeRepository SHALL provide the operation findPetTypes.
+  - Acceptance criteria:
+    - AC1: The PetTypeRepository SHALL expose the operation findPetTypes.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-handles-persistence-for-3cc2263e**: WHEN a caller creates a VetController, the VetController SHALL initialize itself with the given vet repository.
+  - Acceptance criteria:
+    - AC1: WHEN VetController is constructed, the VetController SHALL accept vetRepository of type VetRepository.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-persistence-for-95bf9cbc**: WHEN a caller creates a VisitController, the VisitController SHALL initialize the VisitController with the given owners.
+  - Acceptance criteria:
+    - AC1: WHEN VisitController is constructed, the VisitController SHALL accept owners of type OwnerRepository.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.VisitControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-retrieval-for-in-9fe98d0d**: WHEN an HTTP GET request is received on /owners/find, the OwnerController SHALL render the owners/findOwners view.
+  - Acceptance criteria:
+    - AC1: WHEN initFindForm completes normally, the OwnerController SHALL return "owners/findOwners".
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-retrieval-for-in-7459ee38**: WHEN an HTTP GET request is received on /owners/{ownerId}/pets/{petId}/visits/new, the VisitController SHALL render the pets/createOrUpdateVisitForm view.
+  - Acceptance criteria:
+    - AC1: WHEN initNewVisitForm completes normally, the VisitController SHALL return "pets/createOrUpdateVisitForm".
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.VisitControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-retrieval-for-in-30c5e92a**: WHEN an HTTP GET request is received on /pets/{petId}/edit, the PetController SHALL render the VIEWS_PETS_CREATE_OR_UPDATE_FORM view.
+  - Acceptance criteria:
+    - AC1: WHEN initUpdateForm completes normally, the PetController SHALL return VIEWS_PETS_CREATE_OR_UPDATE_FORM.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-retrieval-for-in-a088f451**: WHEN an HTTP GET request is received on /owners/{ownerId}/edit, the OwnerController SHALL render the VIEWS_OWNER_CREATE_OR_UPDATE_FORM view.
+  - Acceptance criteria:
+    - AC1: WHEN initUpdateOwnerForm completes normally, the OwnerController SHALL return VIEWS_OWNER_CREATE_OR_UPDATE_FORM.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-retrieval-for-sh-b9752d83**: WHEN an HTTP GET request is received on /owners/{ownerId}, the OwnerController SHALL retrieve the owner by ownerId and display the owner's details view.
+  - Acceptance criteria:
+    - AC1: WHEN showOwner runs, the OwnerController SHALL call findById.
+    - AC2: WHEN showOwner completes normally, the OwnerController SHALL return mav.
+    - AC3: WHEN showOwner is invoked, the OwnerController SHALL accept ownerId of type int.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-retrieval-for-sh-5534555f**: WHEN an HTTP GET request is received on /vets, the VetController SHALL return the list of vets as a REST resource.
+  - Acceptance criteria:
+    - AC1: WHEN showResourcesVetList runs, the VetController SHALL call getVetList and findAll.
+    - AC2: WHEN showResourcesVetList completes normally, the VetController SHALL return vets.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-retrieval-for-sh-ad352f31**: WHEN an HTTP GET request is received on /vets.html, the VetController SHALL retrieve the paginated list of vets and render the vets/vetList view.
+  - Acceptance criteria:
+    - AC1: IF page < 1 || page > Math.max(paginated.getTotalPages(), 1), THEN the VetController SHALL return "redirect:/vets.html".
+    - AC2: WHEN showVetList runs, the VetController SHALL call findPaginated and addPaginationModel.
+    - AC3: WHEN showVetList completes normally, the VetController SHALL return addPaginationModel(page, paginated, model).
+    - AC4: WHEN showVetList is invoked, the VetController SHALL accept page, model and redirectAttributes as input.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-retrieval-for-tr-dd427c80**: WHEN an HTTP GET request is received on /oups, the CrashController SHALL throw a RuntimeException to simulate an application error.
+  - Acceptance criteria:
+    - AC1: WHEN triggerException completes normally, the CrashController SHALL return a value of type String.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.system.CrashControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-handles-retrieval-for-we-a17a07fd**: WHEN an HTTP GET request is received on /, the WelcomeController SHALL render the welcome view.
+  - Acceptance criteria:
+    - AC1: WHEN welcome completes normally, the WelcomeController SHALL return "welcome".
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.system.WelcomeControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-load-pet-visit-92a74e7f**: WHEN a caller invokes loadPetWithVisit, the VisitController SHALL return the pet with the visit.
+  - Acceptance criteria:
+    - AC1: WHEN loadPetWithVisit runs, the VisitController SHALL call findById, getPet and addVisit.
+    - AC2: WHEN loadPetWithVisit completes normally, the VisitController SHALL return visit.
+    - AC3: WHEN loadPetWithVisit is invoked, the VisitController SHALL accept ownerId, petId and model as input.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.VisitControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-parse-data-processing-9a0623fe**: WHEN a caller invokes parse, the PetTypeFormatter SHALL parse the text.
+  - Acceptance criteria:
+    - AC1: IF Objects.equals(type.getName(), text), THEN the PetTypeFormatter SHALL return type.
+    - AC2: WHEN parse runs, the PetTypeFormatter SHALL call findPetTypes and getName.
+    - AC3: WHEN parse completes normally, the PetTypeFormatter SHALL return a value of type PetType.
+    - AC4: WHEN parse is invoked, the PetTypeFormatter SHALL accept text of type String and locale of type Locale.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetTypeFormatterTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-process-find-form-10235048**: WHEN an HTTP GET request is received on /owners, the OwnerController SHALL process the owner search form and return matching owners.
+  - Acceptance criteria:
+    - AC1: IF ownersResults.isEmpty(), THEN the OwnerController SHALL return "owners/findOwners".
+    - AC2: IF ownersResults.getTotalElements() == 1, THEN the OwnerController SHALL return "redirect:/owners/" + owner.getId().
+    - AC3: WHEN processFindForm runs, the OwnerController SHALL call getLastName, findPaginatedForOwnersLastName, getId and addPaginationModel.
+    - AC4: WHEN processFindForm completes normally, the OwnerController SHALL return addPaginationModel(page, model, ownersResults).
+    - AC5: WHEN processFindForm is invoked, the OwnerController SHALL accept page, owner, result, model and redirectAttributes as input.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-process-new-visit-form-c44c4383**: WHEN an HTTP POST request is received on /owners/{ownerId}/pets/{petId}/visits/new, the VisitController SHALL persist the owner and redirect to /owners/{ownerId}.
+  - Acceptance criteria:
+    - AC1: IF result.hasErrors(), THEN the VisitController SHALL return "pets/createOrUpdateVisitForm".
+    - AC2: WHEN processNewVisitForm runs, the VisitController SHALL call getDate and addVisit.
+    - AC3: WHEN processNewVisitForm completes normally, the VisitController SHALL return "redirect:/owners/{ownerId}".
+    - AC4: WHEN processNewVisitForm is invoked, the VisitController SHALL accept owner, petId, visit, result and redirectAttributes as input.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.VisitControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-process-update-form-a0a79c6b**: WHEN an HTTP POST request is received on /pets/{petId}/edit, the PetController SHALL redirect to /owners/{ownerId}.
+  - Acceptance criteria:
+    - AC1: IF result.hasErrors(), THEN the PetController SHALL return VIEWS_PETS_CREATE_OR_UPDATE_FORM.
+    - AC2: WHEN processUpdateForm runs, the PetController SHALL call getName, getPet, getId, getBirthDate and updatePetDetails (+1 more).
+    - AC3: WHEN processUpdateForm completes normally, the PetController SHALL return "redirect:/owners/{ownerId}".
+    - AC4: WHEN processUpdateForm is invoked, the PetController SHALL accept owner, pet, result and redirectAttributes as input.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-process-update-owner-for-2683d8c5**: WHEN an HTTP POST request is received on /owners/{ownerId}/edit, the OwnerController SHALL persist the owner and redirect to /owners/{ownerId}.
+  - Acceptance criteria:
+    - AC1: IF result.hasErrors(), THEN the OwnerController SHALL return VIEWS_OWNER_CREATE_OR_UPDATE_FORM.
+    - AC2: IF !Objects.equals(owner.getId(), ownerId), THEN the OwnerController SHALL return "redirect:/owners/{ownerId}/edit".
+    - AC3: WHEN processUpdateOwnerForm runs, the OwnerController SHALL call getId and setId.
+    - AC4: WHEN processUpdateOwnerForm completes normally, the OwnerController SHALL return "redirect:/owners/{ownerId}".
+    - AC5: WHEN processUpdateOwnerForm is invoked, the OwnerController SHALL accept owner, result, ownerId and redirectAttributes as input.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-provide-base-entity-capa-077a96b4**: WHEN a caller invokes an operation of BaseEntity, the BaseEntity SHALL provide the operations getId, setId and isNew.
+  - Acceptance criteria:
+    - AC1: The BaseEntity SHALL expose the operations getId, setId and isNew.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-provide-cache-configurat-cb433be9**: WHEN a caller invokes an operation of CacheConfiguration, the CacheConfiguration SHALL provide the operations petclinicCacheConfigurationCustomizer and cacheConfiguration.
+  - Acceptance criteria:
+    - AC1: The CacheConfiguration SHALL expose the operations petclinicCacheConfigurationCustomizer and cacheConfiguration.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-provide-crash-controller-7878c6dc**: WHEN a caller invokes an operation of CrashController, the CrashController SHALL provide the operation triggerException.
+  - Acceptance criteria:
+    - AC1: The CrashController SHALL expose the operation triggerException.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.system.CrashControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-provide-named-entity-cap-4da47891**: WHEN a caller invokes an operation of NamedEntity, the NamedEntity SHALL provide the operations getName, setName and toString.
+  - Acceptance criteria:
+    - AC1: The NamedEntity SHALL expose the operations getName, setName and toString.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-provide-owner-capability-0559e7e8**: WHEN a caller invokes an operation of Owner, the Owner SHALL provide the operations getAddress, setAddress, getCity, setCity and getTelephone (+6 more).
+  - Acceptance criteria:
+    - AC1: The Owner SHALL expose the operations getAddress, setAddress, getCity, setCity and getTelephone (+6 more).
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-provide-owner-controller-ba27a864**: WHEN a caller invokes an operation of OwnerController, the OwnerController SHALL provide the operations setAllowedFields, findOwner, initCreationForm, processCreationForm and initFindForm (+6 more).
+  - Acceptance criteria:
+    - AC1: The OwnerController SHALL expose the operations setAllowedFields, findOwner, initCreationForm, processCreationForm and initFindForm (+6 more).
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.OwnerControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-provide-person-capabilit-3ade3515**: WHEN a caller invokes an operation of Person, the Person SHALL provide the operations getFirstName, setFirstName, getLastName and setLastName.
+  - Acceptance criteria:
+    - AC1: The Person SHALL expose the operations getFirstName, setFirstName, getLastName and setLastName.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-provide-pet-capability-28ee1de4**: WHEN a caller invokes an operation of Pet, the Pet SHALL provide the operations setBirthDate, getBirthDate, getType, setType and getVisits (+1 more).
+  - Acceptance criteria:
+    - AC1: The Pet SHALL expose the operations setBirthDate, getBirthDate, getType, setType and getVisits (+1 more).
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-provide-pet-clinic-appli-5ff97b7c**: WHEN a caller invokes an operation of PetClinicApplication, the PetClinicApplication SHALL provide the operation main.
+  - Acceptance criteria:
+    - AC1: The PetClinicApplication SHALL expose the operation main.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-provide-pet-clinic-runti-cdf42998**: WHEN a caller invokes an operation of PetClinicRuntimeHints, the PetClinicRuntimeHints SHALL provide the operation registerHints.
+  - Acceptance criteria:
+    - AC1: The PetClinicRuntimeHints SHALL expose the operation registerHints.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-provide-pet-controller-c-b6a27ded**: WHEN an HTTP request is received on /owners/{ownerId}, the PetController SHALL provide the operations populatePetTypes, findOwner, findPet, initOwnerBinder and initPetBinder (+6 more).
+  - Acceptance criteria:
+    - AC1: The PetController SHALL expose the operations populatePetTypes, findOwner, findPet, initOwnerBinder and initPetBinder (+6 more).
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-provide-pet-type-formatt-74d39001**: WHEN a caller invokes an operation of PetTypeFormatter, the PetTypeFormatter SHALL provide the operations print and parse.
+  - Acceptance criteria:
+    - AC1: The PetTypeFormatter SHALL expose the operations print and parse.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetTypeFormatterTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-provide-pet-validator-ca-105a6674**: WHEN a caller invokes an operation of PetValidator, the PetValidator SHALL provide the operations validate and supports.
+  - Acceptance criteria:
+    - AC1: The PetValidator SHALL expose the operations validate and supports.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetValidatorTests$ValidateHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-provide-vet-capability-3403764c**: WHEN a caller invokes an operation of Vet, the Vet SHALL provide the operations getSpecialtiesInternal, getSpecialties, getNrOfSpecialties and addSpecialty.
+  - Acceptance criteria:
+    - AC1: The Vet SHALL expose the operations getSpecialtiesInternal, getSpecialties, getNrOfSpecialties and addSpecialty.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-provide-vet-controller-c-f2ee9be4**: WHEN a caller invokes an operation of VetController, the VetController SHALL provide the operations showVetList, addPaginationModel, findPaginated and showResourcesVetList.
+  - Acceptance criteria:
+    - AC1: The VetController SHALL expose the operations showVetList, addPaginationModel, findPaginated and showResourcesVetList.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.vet.VetControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-provide-vets-capability-9cb10856**: WHEN a caller invokes an operation of Vets, the Vets SHALL provide the operation getVetList.
+  - Acceptance criteria:
+    - AC1: The Vets SHALL expose the operation getVetList.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-provide-visit-capability-ce351fb8**: WHEN a caller invokes an operation of Visit, the Visit SHALL provide the operations getDate, setDate, getDescription and setDescription.
+  - Acceptance criteria:
+    - AC1: The Visit SHALL expose the operations getDate, setDate, getDescription and setDescription.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-provide-visit-controller-4c8ad0ad**: WHEN a caller invokes an operation of VisitController, the VisitController SHALL provide the operations setAllowedFields, loadPetWithVisit, minVisitDate, initNewVisitForm and processNewVisitForm.
+  - Acceptance criteria:
+    - AC1: The VisitController SHALL expose the operations setAllowedFields, loadPetWithVisit, minVisitDate, initNewVisitForm and processNewVisitForm.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.VisitControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-provide-web-configuratio-5417a272**: WHEN a caller invokes an operation of WebConfiguration, the WebConfiguration SHALL provide the operations localeResolver, localeChangeInterceptor and addInterceptors.
+  - Acceptance criteria:
+    - AC1: The WebConfiguration SHALL expose the operations localeResolver, localeChangeInterceptor and addInterceptors.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-provide-welcome-controll-f623b22f**: WHEN a caller invokes an operation of WelcomeController, the WelcomeController SHALL provide the operation welcome.
+  - Acceptance criteria:
+    - AC1: The WelcomeController SHALL expose the operation welcome.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.system.WelcomeControllerTests passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-register-hints-aaeb41ca**: WHEN a caller invokes registerHints, the PetClinicRuntimeHints SHALL register the hints.
+  - Acceptance criteria:
+    - AC1: WHEN registerHints is invoked, the PetClinicRuntimeHints SHALL accept hints of type RuntimeHints and classLoader of type ClassLoader.
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **FR-update-pet-details-ea984733**: WHEN a caller invokes updatePetDetails, the PetController SHALL persist the owner.
+  - Acceptance criteria:
+    - AC1: WHEN updatePetDetails runs, the PetController SHALL call getId, getPet, setName, getName and setBirthDate (+4 more).
+    - AC2: WHEN updatePetDetails is invoked, the PetController SHALL accept owner of type Owner and pet of type Pet.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **FR-validate-input-65315e40**: WHEN a caller invokes validate, the PetValidator SHALL validate the obj.
+  - Acceptance criteria:
+    - AC1: WHEN validate runs, the PetValidator SHALL call getName, isNew, getType and getBirthDate.
+    - AC2: WHEN validate is invoked, the PetValidator SHALL accept obj of type Object and errors of type Errors.
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetValidatorTests$ValidateHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **NFR-COMPATIBILITY-ae6b810f**: WHEN an operation of PetClinicApplication or an operation of PetClinicRuntimeHints interacts with a versioned runtime, SDK or protocol, the system SHALL remain compatible with its declared runtime and protocol versions.
+  - Acceptance criteria:
+    - AC1: WHEN an operation of PetClinicApplication interacts with a versioned runtime, SDK or protocol, the system SHALL honour the declared runtime and protocol versions (evidence: @ImportRuntimeHints(PetClinicRuntimeHints.class) in PetClinicApplication, PetClinicApplication.java:28).
+    - AC2: WHEN an operation of PetClinicRuntimeHints interacts with a versioned runtime, SDK or protocol, the system SHALL honour the declared runtime and protocol versions (evidence: PetClinicRuntimeHints in PetClinicRuntimeHints, PetClinicRuntimeHints.java:25).
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **NFR-DATA-16f4779c**: WHEN findAll persists or changes data, the system SHALL preserve data integrity across persistence and transaction boundaries.
+  - Acceptance criteria:
+    - AC1: WHEN VetRepository.findAll persists or changes data, the system SHALL preserve transactional data integrity (evidence: @Transactional(readOnly = true) in VetRepository.findAll, VetRepository.java:54).
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **NFR-PERFORMANCE-92c573e7**: WHEN petclinicCacheConfigurationCustomizer, cacheConfiguration, findAll or another supporting component serves repeated or bulk work, the system SHALL use caching or batching to bound response latency.
+  - Acceptance criteria:
+    - AC1: WHEN an operation of CacheConfiguration serves repeated or bulk work, the system SHALL use caching or batching (evidence: CacheConfiguration in CacheConfiguration, CacheConfiguration.java:33).
+    - AC2: WHEN CacheConfiguration.petclinicCacheConfigurationCustomizer serves repeated or bulk work, the system SHALL use caching or batching (evidence: petclinicCacheConfigurationCustomizer in CacheConfiguration.petclinicCacheConfigurationCustomizer, CacheConfiguration.java:36).
+    - AC3: WHEN CacheConfiguration.cacheConfiguration serves repeated or bulk work, the system SHALL use caching or batching (evidence: cacheConfiguration in CacheConfiguration.cacheConfiguration, CacheConfiguration.java:49).
+    - AC4: WHEN VetRepository.findAll serves repeated or bulk work, the system SHALL use caching or batching (evidence: @Cacheable("vets") in VetRepository.findAll, VetRepository.java:54).
+  - Verdict: satisfied (evidence: unchanged)
+  - Reasoning: The implementing code did not change between the pre- and post-upgrade codebase, so the behaviour is preserved by construction.
+  - Caveat: Not executed at runtime; rests on the implementing location being unchanged, not on a passing test.
+- **NFR-RELIABILITY-49e8cb2f**: WHEN an exception is raised in processCreationForm or processUpdateForm, the system SHALL catch and handle exceptions raised during its operations.
+  - Acceptance criteria:
+    - AC1: IF DataIntegrityViolationException is thrown in PetController.processCreationForm, THEN the system SHALL catch it and return VIEWS_PETS_CREATE_OR_UPDATE_FORM (evidence: catch (DataIntegrityViolationException ex) in PetController.processCreationForm, PetController.java:128).
+    - AC2: IF DataIntegrityViolationException is thrown in PetController.processUpdateForm, THEN the system SHALL catch it and return VIEWS_PETS_CREATE_OR_UPDATE_FORM (evidence: catch (DataIntegrityViolationException ex) in PetController.processUpdateForm, PetController.java:170).
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetControllerTests$ProcessUpdateFormHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
+- **NFR-SECURITY-77058ab1**: WHEN untrusted input reaches validate, the system SHALL validate and sanitize untrusted input before use.
+  - Acceptance criteria:
+    - AC1: WHEN untrusted input reaches PetValidator.validate, the system SHALL validate or sanitize the input before use (evidence: validate in PetValidator.validate, PetValidator.java:39).
+  - Verdict: satisfied (evidence: test-pass)
+  - Reasoning: Covering test org.springframework.samples.petclinic.owner.PetValidatorTests$ValidateHasErrors passes on both the pre- and post-upgrade code, so the requirement’s tested behaviour is unchanged.
+  - Caveat: Establishes only what that test asserts; behaviour outside the test’s assertions is not covered by it.
