@@ -39,7 +39,7 @@ public class MysqlTestApplication {
 		return new MySQLContainer(DockerImageName.parse("mysql:9.7"));
 	}
 
-	public static void main(String[] args) {
+	void main() {
 		SpringApplication.run(PetClinicApplication.class, "--spring.profiles.active=mysql",
 				"--spring.docker.compose.enabled=false");
 	}
