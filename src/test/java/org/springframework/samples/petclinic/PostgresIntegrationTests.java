@@ -68,7 +68,7 @@ public class PostgresIntegrationTests {
 		assumeTrue(DockerClientFactory.instance().isDockerAvailable(), "Docker not available");
 	}
 
-	public static void main(String[] args) {
+	void main(String[] args) {
 		new SpringApplicationBuilder(PetClinicApplication.class) //
 			.profiles("postgres") //
 			.properties( //
