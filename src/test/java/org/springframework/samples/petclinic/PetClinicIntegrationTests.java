@@ -18,6 +18,8 @@ package org.springframework.samples.petclinic;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.Collection;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringApplication;
@@ -25,9 +27,13 @@ import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
+import org.springframework.cache.interceptor.SimpleKey;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.RequestEntity;
 import org.springframework.http.ResponseEntity;
+import org.springframework.samples.petclinic.vet.Vet;
 import org.springframework.samples.petclinic.vet.VetRepository;
 import org.springframework.web.client.RestTemplate;
 
@@ -43,10 +49,21 @@ public class PetClinicIntegrationTests {
 	@Autowired
 	private RestTemplateBuilder builder;
 
+	@Autowired
+	private CacheManager cacheManager;
+
 	@Test
 	void findAll() {
-		vets.findAll();
-		vets.findAll(); // served from cache
+		Cache vetsCache = cacheManager.getCache("vets");
+		assertThat(vetsCache).as("the 'vets' cache should be configured").isNotNull();
+		vetsCache.clear();
+		assertThat(vetsCache.get(SimpleKey.EMPTY)).as("the 'vets' cache should start empty").isNull();
+
+		Collection<Vet> firstCall = vets.findAll();
+		assertThat(vetsCache.get(SimpleKey.EMPTY)).as("findAll() should populate the 'vets' cache").isNotNull();
+
+		Collection<Vet> secondCall = vets.findAll(); // served from cache
+		assertThat(secondCall).hasSameSizeAs(firstCall);
 	}
 
 	@Test
